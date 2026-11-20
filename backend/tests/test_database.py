@@ -95,7 +95,7 @@ def test_registry_imports_json_once_without_rewriting_legacy_file(tmp_path):
     original = legacy.read_bytes()
     registry = Registry(root)
     assert registry.get('legacy-workspace').root == space
-    registry.mark_open('legacy-workspace','user-id')
+    registry.add(space,user_id='user-id')
     assert legacy.read_bytes() == original
     with connect(root/'app.sqlite') as db:
         assert db.execute('SELECT last_user_id FROM workspace_registry').fetchone()[0] == 'user-id'
@@ -109,6 +109,8 @@ def api(tmp_path):
     with TestClient(application) as client:
         token = client.get('/api/session').json()['token']
         client.headers['x-lexivault-token'] = token
+        from backend.tests.auth_helpers import sign_in
+        sign_in(client)
         space = client.post('/api/workspaces',json={'name':'研究资料'}).json()
         yield client, f"/api/workspaces/{space['id']}", application.state.registry.get(space['id'])
 

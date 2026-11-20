@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from markdown_it import MarkdownIt
 
-from .database import connect, tables
+from .database import backup, connect, tables
 from .migrations import migrate_workspace, WORKSPACE_VERSION
 
 MAX_NOTE = 2 * 1024 * 1024
@@ -158,8 +158,9 @@ class Workspace:
                     metadata.get("doi"),metadata.get("document_type", "paper"),now,now))
         return doc_id
 
-    def ingest(self, data: bytes, filename: str, page_count: int, source="local", source_url="", document_id=None,directory="",existing_path=None):
-        """Shared entry for local uploads and future authorized source downloaders."""
+    def ingest(self, data: bytes, filename: str, page_count: int, source="local", source_url="", document_id=None,
+               directory="", existing_path=None, metadata=None, source_record=None):
+        """Store and index validated local uploads or downloads."""
         if not data.startswith(b"%PDF-") or len(data) > MAX_PDF:
             raise StoreError("仅支持不超过 50 MiB 的 PDF 文件。")
         sha = digest(data)
@@ -177,10 +178,13 @@ class Workspace:
                     original=unique_path(self.root,directory,Path(filename.replace('\\','/')).name)
                     atomic_write(original,data)
                     db.execute('UPDATE attachments SET rel_path=?,filename=? WHERE id=?',(original.relative_to(self.root).as_posix(),original.name,existing['id']))
-                    db.commit()
+                if source_record:
+                    self._source(db, existing['document_id'], source_record)
+                db.commit()
                 return self.public(self.document(existing["document_id"])) | {"duplicate": True, "restored": restored}
             filename = Path(filename.replace("\\", "/")).name[:240] or "paper.pdf"
-            doc_id = document_id or self._create_document(db, Path(filename).stem)
+            metadata = metadata or {}
+            doc_id = document_id or self._create_document(db, metadata.get('title', Path(filename).stem), metadata)
             attachment, revision, now = uuid.uuid4().hex, uuid.uuid4().hex, time.time()
             from .vault import unique_path,user_path
             target=user_path(self.root,existing_path) if existing_path else unique_path(self.root,directory,filename)
@@ -192,7 +196,7 @@ class Workspace:
             db.execute("UPDATE attachments SET active_revision_id=? WHERE id=?", (revision,attachment))
             db.execute("UPDATE documents SET primary_attachment_id=?,updated_at=? WHERE id=? AND primary_attachment_id IS NULL", (attachment,now,doc_id))
             db.execute("INSERT OR IGNORE INTO reading_progress VALUES(?,?,1,?)", (doc_id,revision,now))
-            db.execute("INSERT OR IGNORE INTO source_records(id,document_id,provider,url,fetched_at) VALUES(?,?,?,?,?)", (uuid.uuid4().hex,doc_id,source,source_url,now))
+            self._source(db, doc_id, source_record or {'provider': source, 'url': source_url})
         return self.public(self.document(doc_id)) | {"duplicate": False}
 
     def original(self, doc_id, revision=None):
@@ -398,6 +402,25 @@ class Workspace:
             self._source(db,doc_id,source)
         return self.sources(doc_id)
 
+    def source_versions(self, provider, family):
+        with self.db() as db:
+            rows = db.execute(
+                """SELECT external_id, document_id FROM source_records
+                   WHERE provider=? AND (external_id=? OR substr(external_id,1,length(?) + 1)=? || 'v')
+                   ORDER BY fetched_at DESC""", (provider, family, family, family)
+            ).fetchall()
+        return [(row['external_id'], self.public(self.document(row['document_id']))) for row in rows]
+
+    def document_with_hash(self, hash_value):
+        with self.db() as db:
+            row = db.execute('SELECT document_id FROM attachments WHERE sha256=?', (hash_value,)).fetchone()
+        return row['document_id'] if row else None
+
+    def document_with_doi(self, doi):
+        with self.db() as db:
+            row = db.execute('SELECT id FROM documents WHERE doi=?', (doi,)).fetchone()
+        return row['id'] if row else None
+
     def sources(self, doc_id):
         self.document(doc_id)
         with self.db() as db:
@@ -516,20 +539,41 @@ class Registry:
                 if 'app_meta' not in tables(db):
                     raise StoreError('应用目录中存在其他数据库。')
                 version = db.execute("SELECT value FROM app_meta WHERE key='schema_version'").fetchone()
-                if version and int(version[0]) > 1:
+                if version and int(version[0]) > 3:
                     raise StoreError('应用数据库来自更新版本，请升级程序。')
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS app_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS workspace_registry(
+                if version and int(version[0]) in {1, 2}:
+                    backup(self.database, f'v{version[0]}')
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('CREATE TABLE IF NOT EXISTS app_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+            db.execute('''CREATE TABLE IF NOT EXISTS workspace_registry(
                     id TEXT PRIMARY KEY,name TEXT NOT NULL,root_path TEXT NOT NULL UNIQUE,
-                    last_opened_at REAL NOT NULL,last_user_id TEXT);
-            """)
-            db.execute("INSERT OR IGNORE INTO app_meta VALUES('schema_version','1')")
+                    last_opened_at REAL NOT NULL,last_user_id TEXT)''')
             imported = db.execute("SELECT value FROM app_meta WHERE key='legacy_json_imported'").fetchone()
             if not imported:
                 for item in json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else []:
-                    db.execute('INSERT OR IGNORE INTO workspace_registry VALUES(?,?,?,?,NULL)', (item['id'],item['name'],item['path'],time.time()))
+                    db.execute('INSERT OR IGNORE INTO workspace_registry(id,name,root_path,last_opened_at,last_user_id) VALUES(?,?,?,?,NULL)', (item['id'],item['name'],item['path'],time.time()))
                 db.execute("INSERT INTO app_meta VALUES('legacy_json_imported','1')")
+            db.execute('''CREATE TABLE IF NOT EXISTS user_workspace_state(
+                user_id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL REFERENCES workspace_registry(id) ON DELETE CASCADE)''')
+            db.execute('''CREATE TABLE IF NOT EXISTS user_workspace_history(
+                user_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL REFERENCES workspace_registry(id) ON DELETE CASCADE,
+                opened_at REAL NOT NULL,
+                PRIMARY KEY(user_id, workspace_id))''')
+            version = db.execute("SELECT value FROM app_meta WHERE key='schema_version'").fetchone()
+            if version and int(version[0]) > 3:
+                raise StoreError('应用数据库来自更新版本，请升级程序。')
+            if version and int(version[0]) < 3:
+                columns = {row['name'] for row in db.execute('PRAGMA table_info(workspace_registry)')}
+                if 'owner_user_id' in columns:
+                    db.execute('''INSERT OR IGNORE INTO user_workspace_history
+                        SELECT owner_user_id,id,last_opened_at FROM workspace_registry
+                        WHERE owner_user_id IS NOT NULL''')
+                db.execute('''INSERT OR IGNORE INTO user_workspace_history
+                    SELECT state.user_id,state.workspace_id,space.last_opened_at
+                    FROM user_workspace_state AS state
+                    JOIN workspace_registry AS space ON space.id=state.workspace_id''')
+            db.execute("INSERT OR REPLACE INTO app_meta VALUES('schema_version','3')")
             entries = [dict(row) for row in db.execute('SELECT * FROM workspace_registry ORDER BY last_opened_at DESC')]
         for item in entries:
             root = Path(item["root_path"])
@@ -537,28 +581,125 @@ class Registry:
                 workspace = Workspace(root)
                 self.items[workspace.id] = workspace
 
-    def add(self, root, name=None):
+    @staticmethod
+    def _overlaps(first, second):
+        return first == second or first.is_relative_to(second) or second.is_relative_to(first)
+
+    def _check_root(self, db, root, existing_id=None):
+        # Check before opening or initializing a directory: a denied import must not modify it.
+        managed = self.root / 'workspaces'
+        if (root == self.root or self.root.is_relative_to(root) or root == managed
+                or (root.is_relative_to(self.root) and not root.is_relative_to(managed))):
+            raise StoreError('不能把应用配置目录登记为工作空间，请选择独立的资料目录。', 409)
+        for row in db.execute('SELECT id,root_path FROM workspace_registry'):
+            if row['id'] == existing_id:
+                continue
+            other = Path(row['root_path']).resolve()
+            # Ignore stale registrations without workspace metadata.
+            if (row['id'] not in self.items
+                    and not (other / '.lexivault').exists() and not (other / 'library.sqlite').exists()):
+                continue
+            if self._overlaps(root, other):
+                raise StoreError('该目录与已登记的工作空间重叠，请选择独立目录。', 409, code='workspaceOverlap')
+
+    def add(self, root, name=None, user_id=None):
         with self.lock:
-            workspace = Workspace(Path(root), name)
-            self.items={key:item for key,item in self.items.items() if item.root!=workspace.root or key==workspace.id}
-            self.items[workspace.id] = workspace
+            root = Path(root).resolve()
             with connect(self.database) as db:
-                db.execute('DELETE FROM workspace_registry WHERE root_path=? AND id<>?',(str(workspace.root),workspace.id))
-                db.execute('INSERT INTO workspace_registry(id,name,root_path,last_opened_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,root_path=excluded.root_path,last_opened_at=excluded.last_opened_at',
+                rows = db.execute('SELECT * FROM workspace_registry').fetchall()
+                existing = next((row for row in rows if Path(row['root_path']).resolve() == root), None)
+                self._check_root(db, root, existing['id'] if existing else None)
+            workspace = Workspace(root, name)
+            with connect(self.database) as db:
+                db.execute('BEGIN IMMEDIATE')
+                collision = db.execute('SELECT root_path FROM workspace_registry WHERE id=?', (workspace.id,)).fetchone()
+                if collision and Path(collision['root_path']).resolve() != root:
+                    raise StoreError('工作空间标识与其他目录重复，请使用原目录。', 409)
+                self._check_root(db, root, workspace.id)
+                db.execute('''INSERT INTO workspace_registry(id,name,root_path,last_opened_at) VALUES(?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET name=excluded.name,root_path=excluded.root_path,last_opened_at=excluded.last_opened_at''',
                            (workspace.id,workspace.name,str(workspace.root),time.time()))
-            return workspace
+                if user_id:
+                    self._record_open(db, workspace.id, user_id)
+            self.items={key:item for key,item in self.items.items() if item.root!=workspace.root or key==workspace.id}
+            # A shared directory uses one Workspace lock for edits from all local accounts.
+            return self.items.setdefault(workspace.id, workspace)
+
+    @staticmethod
+    def _record_open(db, identity, user_id):
+        opened_at = time.time()
+        db.execute('UPDATE workspace_registry SET last_opened_at=?,last_user_id=? WHERE id=?',
+                   (opened_at, user_id, identity))
+        db.execute('''INSERT INTO user_workspace_history(user_id,workspace_id,opened_at) VALUES(?,?,?)
+            ON CONFLICT(user_id,workspace_id) DO UPDATE SET opened_at=excluded.opened_at''',
+                   (user_id, identity, opened_at))
+        db.execute('''INSERT INTO user_workspace_state VALUES(?,?)
+            ON CONFLICT(user_id) DO UPDATE SET workspace_id=excluded.workspace_id''', (user_id, identity))
 
     def mark_open(self, identity, user_id=None):
-        workspace = self.get(identity)
+        workspace = self.authorized(identity, user_id) if user_id else self.get(identity)
         with connect(self.database) as db:
-            db.execute('UPDATE workspace_registry SET last_opened_at=?,last_user_id=? WHERE id=?',(time.time(),user_id,identity))
+            if user_id:
+                self._record_open(db, identity, user_id)
+            else:
+                db.execute('UPDATE workspace_registry SET last_opened_at=? WHERE id=?', (time.time(),identity))
         return workspace.info()
 
-    def create(self, name):
+    def create(self, parent, name, user_id=None):
+        from .vault import relative_path
+
         name = name.strip()
         if not name or len(name) > 80:
             raise StoreError("请输入 1 至 80 个字符的工作空间名称。")
-        return self.add(self.root / "workspaces" / uuid.uuid4().hex, name)
+        if relative_path(name) != name or '/' in name:
+            raise StoreError('工作空间名称只能是一个文件夹名。', 422)
+        parent = parent.resolve()
+        if not parent.is_dir():
+            raise StoreError('选择的保存位置已不存在，请重新选择。', 404)
+        root = parent / name
+        with self.lock:
+            with connect(self.database) as db:
+                self._check_root(db, root)
+            try:
+                root.mkdir()
+            except FileExistsError as error:
+                raise StoreError('该位置已有同名文件或文件夹。请更换名称，或使用“打开工作空间”。', 409) from error
+            except OSError as error:
+                raise StoreError('无法创建文件夹，请检查保存位置和写入权限。', 403) from error
+            try:
+                return self.add(root, name, user_id)
+            except Exception:
+                # Remove the new directory only if initialization left it empty.
+                try:
+                    root.rmdir()
+                except OSError:
+                    pass
+                raise
+
+    def authorized(self, identity, user_id):
+        with connect(self.database) as db:
+            row = db.execute('SELECT 1 FROM user_workspace_history WHERE user_id=? AND workspace_id=?',
+                             (user_id, identity)).fetchone()
+        if not row:
+            raise StoreError('工作空间不存在或无权访问。', 404, code='workspaceUnavailable')
+        return self.get(identity)
+
+    def opened(self, user_id):
+        with connect(self.database) as db:
+            rows = db.execute('SELECT workspace_id FROM user_workspace_history WHERE user_id=? ORDER BY opened_at DESC, workspace_id',
+                              (user_id,)).fetchall()
+        return [self.get(row['workspace_id']).info() for row in rows if row['workspace_id'] in self.items]
+
+    def current(self, user_id):
+        with connect(self.database) as db:
+            row = db.execute('SELECT workspace_id FROM user_workspace_state WHERE user_id=?', (user_id,)).fetchone()
+        if row:
+            try:
+                return self.authorized(row[0], user_id).info()
+            except StoreError:
+                pass
+        spaces = self.opened(user_id)
+        return spaces[0] if spaces else None
 
     def get(self, identity):
         try:

@@ -108,6 +108,8 @@ def test_upload_api_session_limits_isolation_and_preference_restart(tmp_path):
     app=create_app(tmp_path/'config')
     with TestClient(app) as client:
         client.headers['X-LexiVault-Token']=client.get('/api/session').json()['token']
+        from backend.tests.auth_helpers import sign_in
+        sign_in(client)
         space=client.post('/api/workspaces',json={'name':'计划空间'}).json();base=f"/api/workspaces/{space['id']}/plans"
         p=plan();body=json.dumps({'plans':[entry(p)],'files':[]})
         assert client.post(base,data={'manifest':body}).status_code==200
@@ -120,7 +122,7 @@ def test_upload_api_session_limits_isolation_and_preference_restart(tmp_path):
         assert client.post(base,data={'manifest':json.dumps({'plans':[entry(invalid)],'files':[]})}).status_code==422
         assert client.post(base,data={'manifest':'{"plans":[{}]}'}).status_code==422
     with TestClient(create_app(tmp_path/'config')) as again:
-        again.get('/api/session')
+        sign_in(again)
         assert again.get(base+'/preferences/lastPlan').json()['value']==p['id']
 
 
@@ -164,6 +166,8 @@ def test_multipart_attachment_download_removal_and_missing_file_metadata(tmp_pat
     app=create_app(tmp_path/'config')
     with TestClient(app) as client:
         client.headers['X-LexiVault-Token']=client.get('/api/session').json()['token']
+        from backend.tests.auth_helpers import sign_in
+        sign_in(client)
         space=client.post('/api/workspaces',json={'name':'附件测试'}).json();base=f"/api/workspaces/{space['id']}/plans"
         p=plan();identity=uuid.uuid4().hex;data=b'local original attachment'
         p['attachmentIds']=[identity]

@@ -11,7 +11,8 @@ let store, editor, plans = [], files = [], current = null, dirty = false, change
 }, suggestions = [], suggestIndex = 0, wikiRange = null, linkRange = null, selectedFiles = [], busyImport = false, channel;
 const clone = (x) => structuredClone(x);
 let removeSpaceGuard, explorer, activeSpace = null, fileRefresh, refreshingFiles = false, externalConflict = false;
-function draftKey(id=current?.id) { return `lexivault.plan-draft.${activeSpace?.id}.${id}`; }
+function draftPrefix() { const user=window.LexiVaultSpace?.userId;return `lexivault.plan-draft.${user?user+'.':''}${activeSpace?.id}.`; }
+function draftKey(id=current?.id) { return draftPrefix()+id; }
 function rememberDraft() {
   if(store?.kind!=='files' || !current)return;
   try {if(dirty)localStorage.setItem(draftKey(),JSON.stringify(current));else localStorage.removeItem(draftKey());}
@@ -21,7 +22,7 @@ function recoverableDraft() {
   try{
     const direct=localStorage.getItem(draftKey());
     if(direct){const draft=JSON.parse(direct);validPlan(draft);return draft;}
-    const prefix=`lexivault.plan-draft.${activeSpace?.id}.`, candidates=[];
+    const prefix=draftPrefix(), candidates=[];
     for(let i=0;i<localStorage.length;i++){
       const key=localStorage.key(i);if(!key?.startsWith(prefix))continue;
       try{const draft=JSON.parse(localStorage.getItem(key));validPlan(draft);if(!plans.some(p=>p.id===draft.id))candidates.push(draft);}catch{}

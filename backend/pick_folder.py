@@ -9,6 +9,7 @@ if __name__ == "__main__":
     root = tk.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
-    selected = filedialog.askdirectory(title="选择 LexiVault 工作空间目录（新目录或已有工作空间）", mustexist=True)
+    title = sys.argv[1] if len(sys.argv) > 1 else '选择 LexiVault 工作空间目录'
+    selected = filedialog.askdirectory(title=title, mustexist=True)
     root.destroy()
     print(json.dumps(selected, ensure_ascii=False))

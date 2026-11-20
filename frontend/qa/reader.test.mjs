@@ -134,6 +134,64 @@ test('preview sanitizes external content and preserves clickable paper citations
   assert.match(preview.querySelector('a[href^="paper:"]').href, /page=2/);
 });
 
+test('a confirmed PDF selection is saved with a numbered link that restores the same text after zoom', async t => {
+  const { w, d, saves, docs, external } = await fixture(t);
+  const scroller = d.querySelector('#reader-pdf-scroll');
+  const page = d.querySelector('#reader-pdf-page');
+  const canvas = d.querySelector('#reader-canvas');
+  const layer = d.querySelector('#reader-text-layer');
+  const button = d.querySelector('#reader-add-annotation');
+  const input = d.querySelector('#reader-note');
+  const markers = d.querySelector('#reader-annotation-highlight');
+  Object.defineProperties(scroller, { clientWidth: { value: 500 }, clientHeight: { value: 300 } });
+  scroller.getBoundingClientRect = () => new w.DOMRect(100, 30, 500, 300);
+  page.getBoundingClientRect = () => new w.DOMRect(100 - scroller.scrollLeft, 30 - scroller.scrollTop, parseFloat(canvas.style.width), parseFloat(canvas.style.height));
+  w.Range.prototype.getClientRects = function () {
+    const bounds = page.getBoundingClientRect();
+    const line = this.startContainer.parentElement.dataset.line === 'second' ? 0.71 : 0.62;
+    return [new w.DOMRect(bounds.left + 0.2 * bounds.width, bounds.top + line * bounds.height, 0.08 * bounds.width, 0.02 * bounds.height)];
+  };
+  d.querySelector('#reader-next').click();
+  await until(() => d.querySelector('#reader-page').value === '2');
+  scroller.scrollTop = 420;
+  layer.innerHTML = '<span>分子</span><span data-line="second">分子</span>';
+  const second = layer.lastElementChild.firstChild;
+  w.getSelection().setBaseAndExtent(second, 0, second, 1);
+  await until(() => !button.hidden);
+  assert.equal(input.value, '论文1原笔记');
+  button.click();
+  assert.equal(d.activeElement, input);
+  assert.equal(input.selectionStart, input.value.length);
+  assert.match(input.value, /\[\\\[1\\\] · 第 2 页\].*&selection=2000,7100,2800,7300\)\n\n> 分\n\n$/);
+  input.setRangeText('复现实验时核对', input.selectionStart, input.selectionEnd, 'end');
+  input.dispatchEvent(new w.Event('input', { bubbles: true }));
+  await until(() => saves.length === 1);
+  const saved = saves[0].text;
+  external(saved);
+  await until(() => d.querySelector('#reader-note-status').textContent === '已更新外部修改');
+  d.querySelector('#reader-prev').click();
+  await until(() => d.querySelector('#reader-page').value === '1');
+  d.querySelector('#reader-zoom-in').click();
+  await until(() => d.querySelector('#reader-zoom').textContent === '115%');
+  const editLink = d.querySelector('#reader-citations a');
+  assert.equal(editLink.textContent, '[1] · 第 2 页');
+  editLink.click();
+  await until(() => markers.childElementCount === 1);
+  assert.equal(d.querySelector('#reader-page').value, '2');
+  assert.equal(markers.firstElementChild.style.top, '71%');
+  assert.ok(scroller.scrollTop > 400);
+  d.querySelector('#reader-preview-tab').click();
+  const preview = d.querySelector('#reader-note-preview');
+  assert.equal(preview.querySelector('a').textContent, '[1] · 第 2 页');
+  assert.match(preview.textContent, /复现实验时核对/);
+  docs[0].sha256 = 'e'.repeat(64);
+  d.querySelector('#reader-refresh').click();
+  await new Promise(resolve => setTimeout(resolve, 25));
+  preview.querySelector('a').click();
+  await until(() => d.querySelector('#reader-alert').textContent.includes('版本或原文位置已不可用'));
+  assert.match(preview.textContent, /复现实验时核对/);
+});
+
 
 test('reader starts directly with three panes and keeps workspace controls in shared sidebar',async t=>{
  const f=await fixture(t);assert.equal(f.d.querySelector('.s-topbar'),null);assert.equal(f.d.querySelector('.reader-workspace-bar'),null);assert.equal(f.d.querySelector('#reader-workspace'),null);assert.equal(f.d.querySelector('#reader-create'),null);

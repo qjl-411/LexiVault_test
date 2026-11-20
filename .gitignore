@@ -222,6 +222,8 @@ __marimo__/
 # LexiVault local environment configuration (keep shareable templates)
 .env.*
 !.env.example
+.lexivault-credentials.key
+.lv-credentials-*
 
 # Workspace metadata, caches and history
 .lexivault/
@@ -233,3 +235,7 @@ __marimo__/
 *.sqlite3-*
 *.db
 *.db-*
+
+# Local research data and IDE settings (never commit)
+pdfs/
+.idea/

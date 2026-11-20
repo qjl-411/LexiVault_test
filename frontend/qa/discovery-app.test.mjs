@@ -8,6 +8,60 @@ import { EXAMPLE_PAPERS } from '../src/discover/catalog.js';
 import { PAPER_FIXTURES } from './discovery-fixtures.mjs';
 EXAMPLE_PAPERS.push(...PAPER_FIXTURES);
 const html=await readFile(new URL('../dist/discover.html',import.meta.url),'utf8');
+
+test('live arXiv search preserves the selected folder and continues after one paper fails', async t => {
+ const dom = domEnv(html, 'http://127.0.0.1:8000/discover.html'), w = dom.window, d = w.document;
+ const q = selector => d.querySelector(selector), calls = [], acquisitions = [];
+ const paper = id => ({ id, title:'Paper ' + id, authors:['A & B'], year:2026, pdf_available:true, tags:[], abstract:'<img src="x"> Abstract' });
+ const first = '2601.01234v1', second = '2601.01235v1';
+ w.LexiVaultSpace = {
+   available:true, current:{ id:'workspace', name:'我的空间', layout:'files' },
+   async request(path, options) {
+     calls.push(path);
+     if (path.startsWith('/api/discovery/arxiv/search')) return { total:11, items:[paper(path.includes('start=10') ? second : first)] };
+     if (path.endsWith('/files')) return { entries:[{kind:'folder',path:'论文/待读'},{kind:'pdf',path:'paper.pdf'}] };
+     const data = JSON.parse(options.body);
+     acquisitions.push(data);
+     if (data.id === first && acquisitions.length === 1) throw new Error('网络超时');
+     return { status:'downloaded', document:{id:'document-id',file_available:true,rel_path:'论文/待读/paper.pdf'} };
+   },
+ };
+ const app = initDiscovery();
+ t.after(() => { app.destroy(); w.close(); });
+ const submit = selector => q(selector).dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+ async function until(predicate) {
+   for (let i = 0; i < 30; i++) {
+     if (predicate()) return;
+     await new Promise(resolve => setTimeout(resolve, 5));
+   }
+   assert.fail('Live discovery did not reach the expected state');
+ }
+ assert.match(q('.d-source-config').textContent, /无需 API Key/);
+ q('#discovery-query').value = 'computer networks';
+ submit('#discovery-search-form');
+ await until(() => q('[data-toggle-paper]'));
+ assert.equal(q('.d-paper img'), null);
+ q('[data-toggle-paper]').click();
+ q('[data-live-page="2"]').click();
+ await until(() => q('[data-toggle-paper]')?.dataset.togglePaper === second);
+ q('[data-toggle-paper]').click();
+ q('#confirm-acquisition').click();
+ await until(() => q('#acquisition-dialog').open);
+ const folder = q('#destination-real-folder');
+ assert.deepEqual([...folder.options].map(option => option.value), ['', '论文/待读']);
+ folder.value = '论文/待读';
+ submit('#acquisition-form');
+ await until(() => q('#discovery-queue a[href^="reader.html"]'));
+ assert.equal(acquisitions.length, 2);
+ assert.deepEqual(acquisitions.map(item => item.directory), ['论文/待读','论文/待读']);
+ assert.match(q('#discovery-queue').textContent, /获取失败.*网络超时/s);
+ assert.match(q('#discovery-queue').textContent, /已入库/);
+ assert.ok(calls.some(path => path.includes('query=computer+networks')));
+ q('[data-retry-paper]').click();
+ await until(() => d.querySelectorAll('#discovery-queue a[href^="reader.html"]').length === 2);
+ assert.equal(acquisitions[2].id, first);
+});
+
 function setup(t,saved={}){
  const dom=domEnv(html,'https://example.test/discover.html'),w=dom.window,d=w.document,q=s=>d.querySelector(s),click=s=>q(s).click();
  const initial=initialState();initial.queue=['molecular-review','self-supervised-graph'];initial.filters.query='graph neural networks molecular pretraining';
@@ -17,6 +71,90 @@ function setup(t,saved={}){
  const api=initDiscovery(),input=(s,value,type='input')=>{q(s).value=value;q(s).dispatchEvent(new w.Event(type,{bubbles:true}));},submit=s=>q(s).dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
  t.after(()=>{assert.equal(requests,0);api.destroy();w.close();});return {w,d,q,click,input,submit,api};
 }
+
+test('live OpenAlex requires an applied Key and uses the same local acquisition queue', async t => {
+ const dom = domEnv(html, 'http://127.0.0.1:8000/discover.html'), w = dom.window, d = w.document;
+ const q = selector => d.querySelector(selector), calls = [];
+ const key = 'openalex-fixture-secret';
+ let configured = false;
+ w.LexiVaultSpace = {
+   available:true, userId:'account-one', current:{id:'workspace', name:'我的空间', layout:'files'},
+   async request(path, options = {}) {
+     calls.push({path, options});
+     if (path.endsWith('/credential')) {
+       if (options.method === 'PUT') { assert.equal(JSON.parse(options.body).key, key); configured = true; }
+       return {configured};
+     }
+     if (path.startsWith('/api/discovery/openalex/search')) return {total:1, items:[{
+       id:'W123', title:'An OpenAlex paper', authors:['Author'], year:2024, abstract:'Abstract', tags:[],
+       pdf_available:true, source_url:'https://example.org/article',
+     }]};
+     if (path.endsWith('/files')) return {entries:[]};
+     return {status:'downloaded', download_source:'cache', document:{id:'openalex-local-doc', file_available:true, rel_path:'paper.pdf'}};
+   },
+ };
+ const app = initDiscovery();
+ t.after(() => { app.destroy(); w.close(); });
+ const submit = id => q(id).dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+ async function until(predicate) {
+   for (let i = 0; i < 30; i++) {
+     if (predicate()) return;
+     await new Promise(resolve => setTimeout(resolve, 5));
+   }
+   assert.fail('Live OpenAlex did not reach the expected state');
+ }
+ q('#source-settings').click();
+ await until(() => !q('#live-source-form button[type=submit]').disabled);
+ const select = q('#live-discovery-source');
+ select.value = 'openalex';
+ select.dispatchEvent(new w.Event('change'));
+ submit('#live-source-form');
+ assert.match(q('#live-source-error').textContent, /请输入/);
+ assert.equal(calls.length, 1);
+ q('#live-openalex-key').value = key;
+ submit('#live-source-form');
+ await until(() => !q('#source-config-dialog').open);
+ assert.equal(q('#live-openalex-key').value, '');
+ assert.equal(w.localStorage.getItem('lexivault.discovery.source.account-one'), 'openalex');
+ assert.ok(!JSON.stringify(w.localStorage).includes(key));
+ assert.match(q('#source-settings-status').textContent, /OpenAlex.*已配置/);
+ q('#discovery-query').value = 'research';
+ submit('#discovery-search-form');
+ await until(() => q('[data-toggle-paper="W123"]'));
+ q('[data-toggle-paper="W123"]').click();
+ q('#confirm-acquisition').click();
+ await until(() => q('#acquisition-dialog').open);
+ submit('#acquisition-form');
+ await until(() => q('a[href="reader.html?document=openalex-local-doc"]'));
+ assert.match(q('#discovery-queue').textContent, /OpenAlex 缓存/);
+ assert.equal(calls.filter(item => item.path.includes('/openalex/')).length, 4);
+ for (const {path, options} of calls) {
+   assert.ok(!path.includes(key));
+   if (options.method !== 'PUT') assert.ok(!options.body?.includes(key));
+   assert.equal(options.headers?.['X-LexiVault-OpenAlex-Key'], undefined);
+ }
+});
+
+test('a refreshed OpenAlex page restores the saved source through account status only', async t => {
+ const dom = domEnv(html, 'http://127.0.0.1:8000/discover.html'), w = dom.window, d = w.document;
+ w.localStorage.setItem('lexivault.discovery.source.account-one', 'openalex');
+ const calls = [];
+ w.LexiVaultSpace = { available:true, userId:'account-one', async request(path, options = {}) {
+   calls.push({path, options});
+   return path.endsWith('/credential') ? {configured:true} : {total:0, items:[]};
+ } };
+ const app = initDiscovery();
+ t.after(() => { app.destroy(); w.close(); });
+ await new Promise(resolve => setTimeout(resolve, 0));
+ assert.match(d.querySelector('#source-settings-status').textContent, /OpenAlex/);
+ assert.equal(d.querySelector('#live-openalex-key').value, '');
+ d.querySelector('#discovery-query').value = 'paper';
+ d.querySelector('#discovery-search-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+ assert.deepEqual(calls.map(call => call.path.split('?')[0]), [
+   '/api/discovery/openalex/credential', '/api/discovery/openalex/search',
+ ]);
+ assert.ok(calls.every(call => !call.options.body && !call.options.headers));
+});
 test('discovery is real HTML matching the three work areas with a explicitly supplied test results',t=>{
  const u=setup(t);assert.equal(u.d.querySelectorAll('.lv-nav-link').length,6);assert.equal(u.q('.prototype-design'),null);assert.ok(u.q('.d-filters'));assert.ok(u.q('.d-results'));assert.ok(u.q('.d-queue'));assert.equal(u.d.querySelectorAll('[data-source-enable]').length,5);assert.equal(u.d.querySelectorAll('.d-paper').length,5);assert.equal(u.q('.s-topbar'),null);assert.equal(u.q('.d-sourcebar'),null);assert.equal(u.q('.d-demo-notice'),null);assert.ok(u.q('.d-toolbar #nav-open'));assert.ok(u.q('#source-config-dialog [data-source-enable]'));assert.match(u.q('.d-results-footnote').textContent,/检索/);assert.equal(u.q('#acquisition-dialog').open,false);assert.ok(u.q('.d-filters #source-settings'));assert.equal(u.q('#download-settings'),null);assert.equal(u.q('.d-sourcebar #source-settings'),null);assert.equal(u.d.querySelectorAll('#acquisition-fix-path').length,1);assert.doesNotMatch(u.q('.d-filters').textContent,/入库位置\s*$/);
 });

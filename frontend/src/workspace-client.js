@@ -1,10 +1,10 @@
 // Shared local workspace picker. Every feature reads the same server selection.
 (() => {
-  let current=null,token='',available=false,spaces=[],dataDir='',busy=false,listRequest=null;
+  let current=null,token='',userId=null,available=false,spaces=[],busy=false,listRequest=null;
   const guards=new Set();
   const menu=document.getElementById('workspace-menu'),trigger=document.getElementById('workspace-selector');
   async function request(path,options={}){
-    const response=await fetch(path,{credentials:'same-origin',...options,headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),'X-LexiVault-Token':token,...options.headers}});
+    const response=await fetch(path,{credentials:'same-origin',...options,headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),'X-LexiVault-Token':token,...(userId?{'X-LexiVault-User':userId}:{}),...options.headers}});
     const data=await response.json();
     if(!response.ok)throw Object.assign(new Error(data.message||'工作空间操作失败。'),{status:response.status});
     return data;
@@ -43,7 +43,7 @@
       list.append(button);if(focused===space.id)button.focus();
     }
     if(!ordered.length){const empty=document.createElement('p');empty.textContent=available?'还没有工作空间':'请先启动本地服务';list.append(empty);}
-    const create=document.getElementById('new-workspace');if(create)create.disabled=busy||!available;
+    for(const id of ['open-workspace','new-workspace']){const button=document.getElementById(id);if(button)button.disabled=busy||!available;}
     positionMenu();
   }
   function paint(){
@@ -75,7 +75,8 @@
     if(busy)return null;busy=true;renderMenu();status();
     try{
       if(!await canSwitch()){status('当前内容尚未处理，请先保存或处理页面中的提示。');return null;}
-      const space=await action();await select(space);notifyOtherPages();closeMenu();if(shouldNavigate)navigate();return space;
+      const space=await action();if(!space||space.cancelled)return space;
+      await select(space);notifyOtherPages();closeMenu();if(shouldNavigate)navigate();return space;
     }finally{busy=false;renderMenu();}
   }
   async function switchTo(id,{navigate:shouldNavigate=true}={}){
@@ -86,11 +87,16 @@
     await ready;name=name.trim();if(!name||name.length>80)throw new Error('请输入 1 至 80 个字符的工作空间名称。');
     return change(()=>request('/api/workspaces',{method:'POST',body:JSON.stringify({name})}),shouldNavigate);
   }
+  async function openWorkspace({navigate:shouldNavigate=true}={}){
+    await ready;
+    const space=await change(()=>request('/api/workspaces/choose',{method:'POST'}),shouldNavigate);
+    return space?.cancelled ? null : space;
+  }
   // Build the same dialog for homepage, reader, plans, and the other routes.
   let dialog,form,nameInput,dialogStatus,submit;
   if(menu){
     dialog=document.createElement('dialog');dialog.className='lv-space-dialog';dialog.id='sidebar-workspace-dialog';dialog.setAttribute('aria-labelledby','sidebar-space-title');
-    dialog.innerHTML='<form id="sidebar-space-form"><div class="lv-space-dialog-heading"><h2 id="sidebar-space-title">新建工作空间</h2><button type="button" id="sidebar-space-close" aria-label="关闭新建工作空间">×</button></div><label for="sidebar-space-name">工作空间名称</label><input id="sidebar-space-name" maxlength="80" required autocomplete="off" placeholder="例如：我的毕业课题"><p id="sidebar-space-location"></p><p id="sidebar-space-error" role="alert" hidden></p><div class="lv-space-dialog-actions"><button type="button" id="sidebar-space-cancel">取消</button><button type="submit" id="sidebar-space-submit">创建并打开</button></div></form>';
+    dialog.innerHTML='<form id="sidebar-space-form"><div class="lv-space-dialog-heading"><h2 id="sidebar-space-title">新建工作空间</h2><button type="button" id="sidebar-space-close" aria-label="关闭新建工作空间">×</button></div><label for="sidebar-space-name">工作空间名称</label><input id="sidebar-space-name" maxlength="80" required autocomplete="off" placeholder="例如：我的毕业课题" aria-describedby="sidebar-space-location"><p id="sidebar-space-location">将在你选择的位置下新建同名文件夹。</p><p id="sidebar-space-error" role="alert" hidden></p><div class="lv-space-dialog-actions"><button type="button" id="sidebar-space-cancel">取消</button><button type="submit" id="sidebar-space-submit">选择保存位置</button></div></form>';
     document.body.append(dialog);form=dialog.querySelector('form');nameInput=dialog.querySelector('input');dialogStatus=dialog.querySelector('#sidebar-space-error');submit=dialog.querySelector('[type=submit]');
     function closeDialog(){if(!busy)dialog.close();}
     dialog.querySelector('#sidebar-space-close').addEventListener('click',closeDialog);dialog.querySelector('#sidebar-space-cancel').addEventListener('click',closeDialog);
@@ -98,16 +104,22 @@
     form.addEventListener('submit',async event=>{
       event.preventDefault();if(busy||!form.reportValidity())return;
       dialogStatus.hidden=true;submit.disabled=true;nameInput.disabled=true;
-      try{const space=await create(nameInput.value);if(space)dialog.close();else{dialogStatus.textContent='当前页面还有未保存内容，请先处理后再创建。';dialogStatus.hidden=false;}}
+      try{
+        const space=await create(nameInput.value);
+        if(space && !space.cancelled)dialog.close();
+        else if(!space){dialogStatus.textContent='当前页面还有未保存内容，请先处理后再创建。';dialogStatus.hidden=false;}
+      }
       catch(error){dialogStatus.textContent=error.message;dialogStatus.hidden=false;}
       finally{submit.disabled=false;nameInput.disabled=false;}
     });
     menu.addEventListener('click',async event=>{
       const item=event.target.closest('[data-workspace-id]');
       if(item){try{await switchTo(item.dataset.workspaceId);}catch(error){status(error.message);}return;}
+      if(event.target.closest('#open-workspace')){
+        try{await openWorkspace();}catch(error){status(error.message);}return;
+      }
       if(event.target.closest('#new-workspace')){
         closeMenu();nameInput.value='';dialogStatus.hidden=true;
-        dialog.querySelector('#sidebar-space-location').textContent=dataDir?`本地保存目录：${dataDir}\\workspaces；创建后自动打开。`:'创建后自动打开新的工作空间。';
         dialog.showModal();nameInput.focus();
       }
     });
@@ -119,11 +131,12 @@
     });
   }
   const ready=(async()=>{
-    try{const session=await request('/api/session');token=session.token;dataDir=session.data_dir||'';current=await request('/api/workspace/current');available=true;}
+    try{const session=await request('/api/session');token=session.token;userId=session.user_id;if(session.user_id===null)return null;current=await request('/api/workspace/current');available=true;}
     catch{ /* Static previews have no local workspace service. */ }
     if(current)spaces=[current];paint();await refreshSpaces();await history().catch(()=>{});return current;
   })();
-  window.LexiVaultSpace={ready,request,select,switchTo,create,refresh:refreshSpaces,addSwitchGuard(guard){guards.add(guard);return()=>guards.delete(guard);},get current(){return current;},get available(){return available;},get directory(){try{return localStorage.getItem('lexivault.directory.'+current?.id)||'';}catch{return '';}},set directory(value){try{localStorage.setItem('lexivault.directory.'+current?.id,value);}catch{}}};
+  window.LexiVaultSpace={ready,request,select,switchTo,create,open:openWorkspace,refresh:refreshSpaces,canLeave:canSwitch,addSwitchGuard(guard){guards.add(guard);return()=>guards.delete(guard);},get userId(){return userId;},get current(){return current;},get available(){return available;},get directory(){try{return localStorage.getItem('lexivault.directory.'+(userId?userId+'.':'')+current?.id)||'';}catch{return '';}},set directory(value){try{localStorage.setItem('lexivault.directory.'+(userId?userId+'.':'')+current?.id,value);}catch{}}};
+  window.addEventListener('lexivault:account-ended',()=>{current=null;spaces=[];available=false;paint();document.getElementById('history-list')?.replaceChildren();});
   window.addEventListener('storage',async event=>{
     if(event.key!=='lexivault.active-workspace.changed')return;
     try{if(await canSwitch())navigate();else status('其他页面已切换工作空间，请先处理当前未保存内容后刷新。');}catch(error){status(error.message);}

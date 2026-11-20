@@ -6,7 +6,7 @@ Python 3.12 + FastAPI + SQLite + pypdf + watchfiles。与现有前端同源运�
 
 - 研究计划正文直接读写工作空间 Markdown 文件，附件保留原件；SQLite 保存元数据、路径和版本。
 
-- 真实账号注册／登录／退出、Argon2id 密码哈希、会话撤销和用户偏好持久化。
+- 登录后使用，支持退出、Argon2id 密码哈希、会话撤销和用户偏好持久化。每个账号分别记录打开过的空间和当前空间。
 - 分离账号、工作空间登记和文献数据库；旧空间自动备份迁移，详见 [数据库说明](DATABASE.md)。
 - 文献元数据可先入库再补全文；来源、标签、收藏夹、批注、引用和任务状态提供持久化接口。
 
@@ -63,7 +63,11 @@ backend\.venv\Scripts\python -m backend --workspace "D:\ResearchLibraries\课题
 
 ## 接口
 
-先同源访问 `GET /api/session`，获取会话令牌与 HttpOnly Cookie。写请求携带 `X-LexiVault-Token`；禁止外站 Origin 和跨站点请求，不开启通配 CORS。程序重启后刷新页面重新建立会话。
+先同源访问 `GET /api/session`，获取本地会话令牌与 HttpOnly Cookie，再通过 `/api/auth/register`、`/api/auth/login` 建立账号会话。业务接口必须同时持有有效账号会话；`/api/session` 本身不代表账号已登录。写请求携带 `X-LexiVault-Token`；账号设置和退出还需要 `X-Account-CSRF`。前端业务请求携带 `X-LexiVault-User`，防止旧页面在浏览器切换账号后继续操作。禁止外站 Origin 和跨站点请求，不开启通配 CORS。
+
+`POST /api/workspaces/choose` 选择并打开本地目录，成功后更新当前账号的打开记录和当前空间。多个账号分别选择同一目录时使用同一份资料。`GET /api/workspaces` 按当前账号的打开时间返回目录，空间子接口和事件连接使用该账号的打开记录。更新后需重启后端。
+
+`POST /api/workspaces` 接收名称并打开系统目录选择器。在选定的父目录下创建同名工作空间，成功后自动打开。取消时返回 `{"cancelled":true}`，遇到同名文件或目录时返回 409。
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
@@ -79,7 +83,9 @@ backend\.venv\Scripts\python -m backend --workspace "D:\ResearchLibraries\课题
 | GET | `/api/workspaces/{w}/documents/{d}/history/{hash}` | 历史正文 |
 | WebSocket | `/api/workspaces/{w}/events` | 文件变化通知与心跳 |
 
-将来来源下载器校验附件后调用 `Workspace.ingest(data, filename, page_count, source, source_url)`，与本地上传共用存储。服务不接受任意客户端绝对文件路径作为读取接口。
+arXiv 下载器与本地上传共用 PDF 校验和 `Workspace.ingest`。检索为 `GET /api/discovery/arxiv/search`，单篇获取为 `POST /api/workspaces/{workspace_id}/discovery/arxiv/acquire`，提交来源版本 ID 与已有工作空间相对目录。检索无需 API Key。下载按来源限流，结果会返回 `downloaded`、`already_available`、`metadata_only` 或 `version_available`。新版本经确认后单独保存。
+
+OpenAlex 在 `/api/discovery/openalex/credential` 提供查看绑定状态、验证并保存 Key（`PUT`）、删除绑定（`DELETE`）。检索 `GET /api/discovery/openalex/search` 和单篇获取 `POST /api/workspaces/{workspace_id}/discovery/openalex/acquire` 都从登录账号读取加密保存的 Key。公开 PDF 优先，OpenAlex 缓存作为备用。成功响应的 `download_source` 表示 `public` 或 `cache`。部署用主密钥详见 [数据库说明](DATABASE.md#openalex-个人凭据)。
 
 文件树接口：`GET/POST /api/workspaces/{w}/files`，以及其下 `/move`、`/upload`、`/delete`、`/content?path=`。`POST /trash` 是系统删除的兼容别名；`GET /trash`、`/trash/{id}/restore` 仅用于恢复旧版本的内部回收站内容。所有用户文件操作限制在空间内，禁止内部目录、越界路径和符号链接。关联阅读笔记：`POST /api/workspaces/{w}/files/documents/{d}/note`，正文 `{path}`。
 
@@ -95,4 +101,4 @@ python -X utf8 qa/check_static.py
 
 首版限制：每份 PDF 最大 50 MiB、1–3000 页；不支持加密 PDF，不做 OCR。扫描 PDF 可显示原图，但没有可摘录的文字层。PDF 检查不代表正文已正确解析或已建立检索索引。笔记正文最大约 2 MiB。
 
-目前不包含真实来源检索下载、PDF 转 Markdown、正文索引、问答、多人实时协作和跨设备同步。研究计划现已改为本地 Markdown 与附件，支持浏览器旧数据迁移、外部修改检测、冲突保护与应急草稿，详见 [研究计划本地文件](PLANS.md)。
+文献来源支持 arXiv 和 OpenAlex。正文索引、PDF 转 Markdown、多人实时协作和跨设备同步仍待接入。研究计划现已改为本地 Markdown 与附件，支持浏览器旧数据迁移、外部修改检测、冲突保护与应急草稿，详见 [研究计划本地文件](PLANS.md)。

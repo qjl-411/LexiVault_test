@@ -2,6 +2,10 @@ import { build } from "esbuild";
 import { mkdir, rm, cp, readFile, writeFile, readdir } from "node:fs/promises";
 import { writePages } from "./pages.mjs";
 import { createHash } from 'node:crypto';
+await mkdir('dist', {recursive:true});
+for (const name of ['index.html','app.js','validation.js']) await cp('src/auth/'+name, 'dist/'+name);
+await cp('src/home/app.js', 'dist/workspace.js');
+await cp('src/account.css', 'dist/account.css');
 const pdfWorkerBytes = await readFile('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs');
 const pdfWorkerName = `pdf.worker.${createHash('sha256').update(pdfWorkerBytes).digest('hex').slice(0,12)}.js`;
 await mkdir('dist/vendor', {recursive:true});
@@ -15,6 +19,7 @@ for (const name of await readdir('dist')) {
   let html = await readFile(file,'utf8');
   html = html.replace(/(href="[^"?]+\.css)\?v=[^" ]+/g,'$1');
   html = html.replace(/(src="[^"?]+\.js)\?v=[^" ]+/g,'$1');
+  if (!html.includes('href="account.css"')) html = html.replace('</head>','<link rel="stylesheet" href="account.css"></head>');
   html = html.replace(/<script src="workspace-client.js" defer><\/script>/g,'');
   html = html.replace(/(<script(?: type="module"| src="(?:sidebar|workspace|account-client)\.js"))/, '<script src="workspace-client.js" defer></script>$1');
   await writeFile(file,html);

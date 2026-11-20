@@ -2,7 +2,7 @@
 import json
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from .storage import StoreError
@@ -32,11 +32,8 @@ def workspace_router(registry):
     router = APIRouter(tags=['workspace'])
 
     @router.get('/api/workspace/current')
-    def current():
-        with registry.lock:
-            with connect(registry.database) as db:
-                rows = db.execute('SELECT id FROM workspace_registry ORDER BY last_opened_at DESC').fetchall()
-            return next((registry.get(row['id']).info() for row in rows if row['id'] in registry.items),None)
+    def current(request: Request):
+        return registry.current(request.state.user['id'])
 
     @router.get('/api/workspaces/{workspace_id}/assistant')
     def assistant(workspace_id: str):

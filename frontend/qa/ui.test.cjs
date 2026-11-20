@@ -85,28 +85,49 @@ test('a connected sign-in adapter receives credentials, while storage and events
   assert.deepEqual(ui.navigation,['https://lexivault.example/workspace']);
 });
 test('registration confirms passwords and returns to login only after adapter success',async()=>{
-  let requests=0; const ui=setup({signUp:async()=>{requests++;}});
+  let requests=0, sent; const ui=setup({requestEmailCode:async input=>{sent=input;},signUp:async({code})=>{assert.equal(code,'0042');requests++;}});
   ui.click('#tab-register'); ui.q('#email').value='user@institute.edu'; ui.q('#password').value='secret123'; ui.q('#confirm-password').value='different';
+  ui.click('#send-email-code'); await ui.tick();
+  assert.equal(sent.email,'user@institute.edu'); assert.equal(sent.purpose,'register'); assert.equal(sent.password,undefined);
+  ui.q('#email-code').value='0042';
   ui.submit(); assert.equal(requests,0); assert.equal(ui.q('#confirm-error').hidden,false);
   ui.q('#confirm-password').value='secret123'; ui.submit(); await ui.tick();
   assert.equal(requests,1); assert.equal(ui.q('#tab-login').getAttribute('aria-selected'),'true');
   assert.equal(ui.q('#form-status').dataset.kind,'success'); assert.match(ui.q('#form-status').textContent,/请登录/);
 });
-test('forgot-password dialog validates email and reports actual adapter completion',async()=>{
-  let requested; const ui=setup({requestPasswordReset:async({email})=>{requested=email;}});
+test('forgot-password dialog requests a code and confirms the new password',async()=>{
+  let requested, confirmed;
+  const ui=setup({requestPasswordReset:async({email})=>{requested=email;},confirmPasswordReset:async input=>{confirmed=input;}});
   ui.q('#email').value='user@institute.edu'; ui.click('#forgot-password');
   assert.equal(ui.q('#reset-dialog').hasAttribute('open'),true);
   assert.equal(ui.q('#reset-email').value,'user@institute.edu');
-  ui.q('#reset-form').dispatchEvent(new ui.window.Event('submit',{bubbles:true,cancelable:true})); await ui.tick();
+  ui.click('#reset-send-code'); await ui.tick();
   assert.equal(requested,'user@institute.edu'); assert.equal(ui.q('#reset-status').dataset.kind,'success');
+  ui.q('#reset-code').value='0042'; ui.q('#reset-password').value='newPassword123'; ui.q('#reset-confirm-password').value='different';
+  const submit = () => ui.q('#reset-form').dispatchEvent(new ui.window.Event('submit',{bubbles:true,cancelable:true}));
+  submit(); assert.equal(confirmed,undefined);
+  ui.q('#reset-confirm-password').value='newPassword123'; submit(); await ui.tick();
+  assert.equal(confirmed.code,'0042'); assert.equal(confirmed.password,'newPassword123');
+  assert.equal(ui.q('#reset-dialog').hasAttribute('open'),false);
+  assert.equal(ui.q('#reset-password').value,''); assert.match(ui.q('#form-status').textContent,/密码已重置/);
 });
-test('local folder selection passes a handle without reading or uploading files',async()=>{
-  const ui=setup(); let selected;
-  ui.window.showDirectoryPicker=async()=>({name:'My Research',getFile:()=>{throw new Error('must not read files');}});
-  ui.document.addEventListener('lexivault:vault-selected',event=>{selected=event.detail;});
-  ui.click('#open-vault'); await ui.tick();
-  assert.equal(selected.name,'My Research'); assert.equal(ui.q('#vault-name').textContent,'My Research');
-  assert.equal(ui.q('#vault-dialog').hasAttribute('open'),true);
+test('legacy sign-in prompts for an email code after the server verifies the original password',async()=>{
+  let verified, sent;
+  const ui=setup({signIn:async input=>{
+    if(!input.code)throw Object.assign(new Error('verification required'),{code:'emailVerificationRequired'});
+    verified=input;return {};
+  },requestEmailCode:async input=>{sent=input;}});
+  ui.q('#email').value='user@institute.edu'; ui.q('#password').value='secret123'; ui.submit(); await ui.tick();
+  assert.equal(ui.q('#email-code-field').hidden,false);
+  ui.click('#send-email-code'); await ui.tick();
+  assert.equal(sent.purpose,'verify_email'); assert.equal(sent.password,'secret123');
+  ui.q('#email-code').value='0042'; ui.submit(); await ui.tick();
+  assert.equal(verified.code,'0042'); assert.deepEqual(ui.navigation,['https://lexivault.example/home.html']);
+});
+test('login page offers no guest entry, divider or local note',()=>{
+  const ui=setup();
+  assert.equal(ui.q('#open-vault'),null);assert.equal(ui.q('.form-divider'),null);
+  assert.equal(ui.q('.local-note'),null);assert.equal(ui.q('#vault-dialog'),null);
 });
 test('successful sign-in enters the new homepage by default',async()=>{
   const ui=setup({signIn:async()=>({})});
@@ -114,9 +135,7 @@ test('successful sign-in enters the new homepage by default',async()=>{
   ui.submit();await ui.tick();
   assert.deepEqual(ui.navigation,['https://lexivault.example/home.html']);
 });
-test('a selected local vault enters the homepage and carries its workspace name',async()=>{
-  const ui=setup();ui.window.showDirectoryPicker=async()=>({name:'Research Vault'});
-  ui.click('#open-vault');await ui.tick();ui.click('#vault-enter');
-  assert.equal(ui.sessionSaved.get('lexivault.vault-name'),'Research Vault');
-  assert.deepEqual(ui.navigation,['https://lexivault.example/home.html']);
+test('service terms describe login and personal workspace history',()=>{
+  const ui=setup();ui.click('[data-legal="terms"]');
+  assert.match(ui.q('#legal-content').textContent,/每个账号分别记录打开过的空间/);
 });

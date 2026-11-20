@@ -2,13 +2,15 @@ import { initSuite, icon } from '../suite.js';
 import { PROVIDERS, EXAMPLE_PAPERS, TYPE_LABELS } from './catalog.js';
 import { STORAGE_KEY, PAGE_SIZES, initialState, restoreState, restoreDraft, serializableState, visibleFields, configurationIssues, validatePath, resultsFor, paginateResults, queueSources, buildDraft } from './model.js';
 import { createYearFilter } from './year-range.js';
+import { initLiveDiscovery } from './live.js';
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 
 export function initDiscovery() {
   if (document.body.dataset.feature !== 'discover') return null;
   initSuite();
-  const storageKey = STORAGE_KEY + '.' + (window.LexiVaultSpace?.current?.id || 'unselected');
+  if (window.LexiVaultSpace?.available) return initLiveDiscovery(window.LexiVaultSpace);
+  const storageKey = STORAGE_KEY + '.' + (window.LexiVaultSpace?.userId ? window.LexiVaultSpace.userId+'.' : '') + (window.LexiVaultSpace?.current?.id || 'unselected');
   const draftKey = storageKey + '.draft';
   const d = document, w = window, q = s => d.querySelector(s), all = s => [...d.querySelectorAll(s)];
   const abort = new w.AbortController(), on = (el, type, fn) => el?.addEventListener(type, fn, { signal: abort.signal });

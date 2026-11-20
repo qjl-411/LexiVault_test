@@ -27,7 +27,7 @@ PDF 导入时选择已有目录，按原文件名保存。外部放入的 PDF �
 - 富文本编辑缓存：`.lexivault/plan-docs/`；外部 Markdown 修改后按正文重新解析。
 - 历史：`.lexivault/history/`。删除的文件位于操作系统回收站；旧版本已有的 `.lexivault/trash/` 内容保留兼容，不会自动清空。
 - 本机空间登记：`%LOCALAPPDATA%\LexiVault\app.sqlite`；账号独立保存在 `accounts.sqlite`。
-- 文献发现尚未连接真实下载；其目标位置选择当前空间的已有目录，不会自行创建目录。
+- 文献发现可将公开 arXiv PDF 保存到当前空间的根目录或已有目录。保存后的 PDF 可以从获取队列进入阅读页。
 
 关闭服务后复制整个工作空间可做备份，只复制 SQLite 不包含正文和附件。
 

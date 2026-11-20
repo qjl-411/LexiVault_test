@@ -1,0 +1,2 @@
+#workspace-menu #open-workspace { border-top: 1px solid var(--lv-line); border-radius: 0; margin-top: 5px; color: var(--lv-accent); }
+#workspace-menu #new-workspace { border-top: 0; border-radius: 5px; margin-top: 0; }

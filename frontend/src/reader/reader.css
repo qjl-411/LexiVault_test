@@ -36,6 +36,14 @@
 #reader-folder-error::before{content:'';position:absolute;left:var(--reader-folder-arrow-left,50%);top:-5px;width:8px;height:8px;transform:translateX(-50%) rotate(45deg);background:var(--surface);border-top:1px solid var(--hint-line);border-left:1px solid var(--hint-line)}
 #reader-folder-error[data-placement=above]::before{top:auto;bottom:-5px;transform:translateX(-50%) rotate(225deg)}
 :root[data-theme=dark] #reader-folder-error{color:#d5ad97}
+
+#reader-add-annotation{
+ position:absolute;z-index:3;white-space:nowrap;padding:7px 12px;border:1px solid var(--line);border-radius:6px;
+ background:var(--surface);color:var(--accent);box-shadow:0 3px 10px #0002;font-size:12px;font-weight:600;
+}
+#reader-add-annotation:hover{background:var(--accent-soft)}
+#reader-annotation-highlight{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:1}
+#reader-annotation-highlight span{position:absolute;background:#f3c64b66;border-radius:2px}
 .reader-document-row{display:flex;align-items:center;position:relative;gap:2px;border-radius:4px}
 .reader-document-row>.reader-document{flex:1;min-width:0}
 .reader-folder-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

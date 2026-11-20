@@ -3,12 +3,18 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { initSuite, icon } from '../suite.js';
 import {renderPaperTree} from './tree.js';
+import { annotationQuote, parseSelection, selectionRectangles } from './annotations.js';
 
 initSuite();
 // The build injects the matching, content-hashed worker asset to bypass stale module caches.
 GlobalWorkerOptions.workerSrc = new URL(__PDFJS_WORKER_URL__, import.meta.url).href;
 const $ = (selector) => document.querySelector(selector);
 const noteInput = $('#reader-note');
+const pdfScroll = $('#reader-pdf-scroll');
+const pdfPage = $('#reader-pdf-page');
+const textLayer = $('#reader-text-layer');
+const annotationButton = $('#reader-add-annotation');
+const annotationHighlight = $('#reader-annotation-highlight');
 const status = (message) => { $('#reader-note-status').textContent = message; };
 let token, workspace = null, documents = [], active = null, pdf = null;
 let importing=false,creatingFolder=false,selectedFolder='',activePath='';
@@ -16,6 +22,9 @@ let folderDraft = null, folderCreatePromise = null;
 let deletingEntry = false, pendingDelete = null;
 const expandedFolders=new Set();
 let pageNumber = 1, scale = null, renderTask = null, textTask = null, generation = 0;
+let renderedPage = null, selectedPassage = null, textDrag = null;
+let pendingSelection = null, highlightPage = null, highlightTimer;
+let fittedWidth = null;
 let revision = null, savedText = '', dirty = false, blocked = false, savePromise = null;
 let debounce, socket, reconnect, refreshTimer, resizing;
 let preview = false, historyMarkdown = null;
@@ -69,7 +78,7 @@ function showConflict(message) {
   $('#reader-conflict-message').textContent = message;
   status('有冲突 · 草稿已保留');
 }
-function draftKey() { return active && workspace ? `lexivault.reader.draft.${workspace.id}.${active.id}` : null; }
+function draftKey() { const user=window.LexiVaultSpace?.userId;return active && workspace ? `lexivault.reader.draft.${user?user+'.':''}${workspace.id}.${active.id}` : null; }
 function rememberDraft() {
   const key = draftKey();
   if (!key) return;
@@ -335,6 +344,8 @@ function setEnabled(enabled) {
 }
 async function clearPaper() {
   generation++;
+  renderedPage = null; pendingSelection = null; textDrag = null;
+  dismissAnnotationButton(); clearAnnotationHighlight();
   renderTask?.cancel(); textTask?.cancel();
   const previous = pdf; pdf = null;
   if (previous) await previous.destroy();
@@ -389,7 +400,7 @@ async function loadDocument(item, options = {}) {
     const opened = await loading.promise;
     if (generation !== currentGeneration || active?.id !== id) { await opened.destroy(); return; }
     pdf = opened; pageNumber = Math.max(1, Math.min(options.page || item.last_page, pdf.numPages)); scale = null;
-    await renderPage();
+    await renderPage({ selection: options.selection });
   } catch (error) {
     if (generation === currentGeneration) { $('#reader-pdf-status').hidden = false; $('#reader-pdf-status').textContent = `无法打开原文：${error.message}。阅读笔记仍可使用。`; }
   }
@@ -403,48 +414,147 @@ function updatePdfTools() {
   $('#reader-pages').textContent = `/ ${pdf?.numPages || 0}`;
 }
 let renderSequence = 0;
-async function renderPage({ preserveScroll = false } = {}) {
+async function renderPage({ preserveScroll = false, selection } = {}) {
   if (!pdf) return;
   const sequence = ++renderSequence, identity = generation, currentPDF = pdf;
-  const scroll = $('#reader-pdf-scroll'), canvas = $('#reader-canvas');
+  const targetPage = pageNumber, canvas = $('#reader-canvas');
   const previousHeight = parseFloat(canvas.style.height) || 1;
-  const relativeTop = scroll.scrollTop / previousHeight;
+  const relativeTop = pdfScroll.scrollTop / previousHeight;
+  if (selection !== undefined) pendingSelection = selection ? { page: targetPage, rectangles: selection } : null;
+  if (pendingSelection?.page !== targetPage) pendingSelection = null;
+  if (highlightPage !== targetPage || selection === null) clearAnnotationHighlight();
+  renderedPage = null; dismissAnnotationButton();
   renderTask?.cancel(); textTask?.cancel();
   try {
-    const page = await currentPDF.getPage(pageNumber);
+    const page = await currentPDF.getPage(targetPage);
     if (sequence !== renderSequence || identity !== generation) return;
     const viewport0 = page.getViewport({ scale: 1 });
-    const padding=getComputedStyle(scroll);
-    const availableWidth=scroll.clientWidth-parseFloat(padding.paddingLeft||0)-parseFloat(padding.paddingRight||0);
+    const padding=getComputedStyle(pdfScroll);
+    fittedWidth = pdfScroll.clientWidth;
+    const availableWidth=fittedWidth-parseFloat(padding.paddingLeft||0)-parseFloat(padding.paddingRight||0);
     const fit = Math.max(0.25, (availableWidth-2) / viewport0.width);
     const actualScale = Math.min(scale || fit, 3);
     const viewport = page.getViewport({ scale: actualScale });
-    const container = $('#reader-pdf-page'), layer = $('#reader-text-layer');
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.floor(viewport.width * ratio); canvas.height = Math.floor(viewport.height * ratio);
     canvas.style.width = `${viewport.width}px`; canvas.style.height = `${viewport.height}px`;
-    container.style.width = `${viewport.width}px`; container.style.height = `${viewport.height}px`;
-    layer.replaceChildren();
-    layer.style.setProperty('--scale-factor', actualScale); layer.style.setProperty('--total-scale-factor', actualScale);
-    container.hidden = false; $('#reader-pdf-status').hidden = true;
+    pdfPage.style.width = `${viewport.width}px`; pdfPage.style.height = `${viewport.height}px`;
+    textLayer.replaceChildren();
+    textLayer.style.setProperty('--scale-factor', actualScale); textLayer.style.setProperty('--total-scale-factor', actualScale);
+    pdfPage.hidden = false; $('#reader-pdf-status').hidden = true;
     renderTask = page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: [ratio, 0, 0, ratio, 0, 0] });
     await renderTask.promise;
     if (sequence !== renderSequence || identity !== generation) return;
     const content = await page.getTextContent();
     if (sequence !== renderSequence || identity !== generation) return;
-    textTask = new TextLayer({ textContentSource: content, container: layer, viewport });
+    textTask = new TextLayer({ textContentSource: content, container: textLayer, viewport });
     await textTask.render();
     if (sequence !== renderSequence || identity !== generation) return;
     $('#reader-zoom').textContent = `${Math.round(actualScale * 100)}%`;
+    renderedPage = targetPage;
     updatePdfTools();
-    scroll.scrollTop = preserveScroll ? relativeTop * viewport.height : 0;
-    await api(`${docBase()}/position`, { method: 'PUT', body: JSON.stringify({ page: pageNumber }) });
+    pdfScroll.scrollTop = preserveScroll ? relativeTop * viewport.height : 0;
+    if (pendingSelection) {
+      showAnnotationHighlight(pendingSelection.rectangles);
+      pendingSelection = null;
+    }
+    await api(`${docBase()}/position`, { method: 'PUT', body: JSON.stringify({ page: targetPage }) });
   } catch (error) {
     if (['RenderingCancelledException', 'AbortException'].includes(error.name) || sequence !== renderSequence || identity !== generation) return;
     alert(`页面显示或阅读位置保存失败：${error.message}`);
   }
 }
 function citation(page = pageNumber) { return `[文件第 ${page} 页](paper://${active.id}?revision=${active.sha256}&page=${page})`; }
+function scheduleFit() {
+  clearTimeout(resizing);
+  if (scale || !pdf || !pdfScroll.clientWidth || fittedWidth === pdfScroll.clientWidth) return;
+  resizing = setTimeout(() => {
+    // Rebuilding the text layer would collapse any selection still being made or annotated.
+    if (!scale && pdf && pdfScroll.clientWidth && fittedWidth !== pdfScroll.clientWidth && !textDrag && !selectedPassage) {
+      void renderPage({ preserveScroll: true });
+    }
+  }, 200);
+}
+function clearAnnotationHighlight() {
+  clearTimeout(highlightTimer);
+  annotationHighlight.replaceChildren();
+  highlightPage = null;
+}
+function showAnnotationHighlight(rectangles) {
+  clearAnnotationHighlight();
+  highlightPage = renderedPage;
+  const markers = rectangles.map(([left, top, right, bottom]) => {
+    const marker = document.createElement('span');
+    Object.assign(marker.style, {
+      left: `${left * 100}%`, top: `${top * 100}%`, width: `${(right - left) * 100}%`, height: `${(bottom - top) * 100}%`,
+    });
+    return marker;
+  });
+  annotationHighlight.append(...markers);
+  const page = pdfPage.getBoundingClientRect(), scroller = pdfScroll.getBoundingClientRect();
+  const [left, top, right, bottom] = rectangles[0];
+  const x = page.left + (left + right) / 2 * page.width;
+  const y = page.top + (top + bottom) / 2 * page.height;
+  pdfScroll.scrollLeft += x - scroller.left - pdfScroll.clientWidth / 2;
+  pdfScroll.scrollTop += y - scroller.top - pdfScroll.clientHeight / 2;
+  highlightTimer = setTimeout(clearAnnotationHighlight, 2600);
+}
+function dismissAnnotationButton() {
+  selectedPassage = null;
+  annotationButton.hidden = true;
+}
+function pdfCaret(x, y) {
+  const position = document.caretPositionFromPoint?.(x, y);
+  const range = position ? null : document.caretRangeFromPoint?.(x, y);
+  const node = position?.offsetNode ?? range?.startContainer;
+  if (node?.nodeType === Node.TEXT_NODE && textLayer.contains(node)) {
+    return { node, offset: position?.offset ?? range.startOffset };
+  }
+  return null;
+}
+function updateAnnotationButton() {
+  const selection = window.getSelection();
+  if (!active || !pdf || renderedPage !== pageNumber || textDrag || navigating || noteInput.disabled ||
+      !pdfScroll.clientWidth || !selection?.rangeCount || selection.isCollapsed ||
+      !textLayer.contains(selection.anchorNode) || !textLayer.contains(selection.focusNode)) {
+    dismissAnnotationButton(); return;
+  }
+  const text = selection.toString().trim();
+  const range = selection.getRangeAt(0);
+  const viewport = pdfScroll.getBoundingClientRect();
+  const viewRight = viewport.left + pdfScroll.clientWidth, viewBottom = viewport.top + pdfScroll.clientHeight;
+  const rect = [...range.getClientRects()].find(rect => rect.width && rect.height &&
+    rect.bottom > viewport.top && rect.top < viewBottom && rect.right > viewport.left && rect.left < viewRight);
+  if (!text || !rect) { dismissAnnotationButton(); return; }
+  selectedPassage = { range: range.cloneRange(), text };
+  annotationButton.hidden = false;
+  const gap = 6, width = annotationButton.offsetWidth, height = annotationButton.offsetHeight;
+  const left = Math.max(viewport.left + gap, Math.min(rect.left, viewRight - width - gap));
+  const top = rect.bottom + height + 2 * gap <= viewBottom ? rect.bottom + gap : Math.max(viewport.top + gap, rect.top - height - gap);
+  annotationButton.style.left = `${left - viewport.left + pdfScroll.scrollLeft}px`;
+  annotationButton.style.top = `${top - viewport.top + pdfScroll.scrollTop}px`;
+}
+function addSelectionAnnotation() {
+  updateAnnotationButton();
+  if (!selectedPassage) return;
+  const { range, text } = selectedPassage;
+  const rectangles = selectionRectangles(range, pdfPage.getBoundingClientRect());
+  if (!rectangles.length) { dismissAnnotationButton(); alert('无法定位这段选文，请重新选择后再添加批注。'); return; }
+  let number = 1;
+  for (const [, label, url] of noteInput.value.matchAll(citationPattern)) {
+    const match = /^\[([1-9]\d{0,8})\]/.exec(citationLabel(label));
+    if (match && url.includes('&selection=')) number = Math.max(number, Number(match[1]) + 1);
+  }
+  const target = `paper://${active.id}?revision=${active.sha256}&page=${pageNumber}&selection=${rectangles.join('.')}`;
+  const label = `[\\[${number}\\] · 第 ${pageNumber} 页]`;
+  const end = noteInput.value.length;
+  const spacer = !end || noteInput.value.endsWith('\n\n') ? '' : noteInput.value.endsWith('\n') ? '\n' : '\n\n';
+  dismissAnnotationButton(); window.getSelection()?.removeAllRanges();
+  scheduleFit();
+  noteInput.setSelectionRange(end, end);
+  insertText(`${spacer}${label}(${target})\n\n${annotationQuote(text)}\n\n`);
+  noteInput.scrollTop = noteInput.scrollHeight;
+}
 function insertText(text) {
   if (noteInput.disabled) return;
   noteInput.setRangeText(text, noteInput.selectionStart, noteInput.selectionEnd, 'end');
@@ -456,7 +566,8 @@ function setPreview(value) {
   $('#reader-edit-tab').setAttribute('aria-pressed', String(!value));
   $('#reader-preview-tab').setAttribute('aria-pressed', String(value)); drawNotes();
 }
-const citationPattern = /\[([^\]\n]+)\]\((paper:\/\/[a-f0-9]+\?revision=[a-f0-9]{64}&page=\d+)\)/g;
+const citationPattern = /\[((?:\\.|[^\\\]\r\n])+)\]\((paper:\/\/[a-f0-9]+\?revision=[a-f0-9]{64}&page=\d+(?:&selection=[\d.,]+)?)\)/g;
+const citationLabel = (label) => label.replace(/\\([\\\[\]])/g, '$1');
 function drawNotes() {
   const raw = noteInput.value;
   if (preview) {
@@ -469,7 +580,7 @@ function drawNotes() {
   }
   const links = $('#reader-citations');links.hidden=preview; links.replaceChildren();
   for (const match of raw.matchAll(citationPattern)) {
-    const a = document.createElement('a'); a.href = match[2]; a.textContent = match[1]; links.append(a);
+    const a = document.createElement('a'); a.href = match[2]; a.textContent = citationLabel(match[1]); links.append(a);
   }
 }
 async function followCitation(event) {
@@ -478,10 +589,17 @@ async function followCitation(event) {
   event.preventDefault();
   try {
     const url = new URL(a.getAttribute('href'));
-    const item = documents.find(d => d.id === url.hostname), page = Number(url.searchParams.get('page'));
-    if (!item || url.searchParams.get('revision') !== item.sha256 || !Number.isInteger(page) || page < 1 || page > item.page_count) throw new Error('引用的文献、版本或页码已不可用。');
-    if (active?.id === item.id && pdf) { pageNumber = page; pane('paper'); await renderPage(); }
-    else await openDocument(item, { page });
+    const page = Number(url.searchParams.get('page')), hash = url.searchParams.get('revision');
+    const encoded = url.searchParams.get('selection');
+    const selection = encoded === null ? null : parseSelection(encoded);
+    const item = documents.find(d => d.id === url.hostname) ||
+      (selection && documents.find(d => d.sha256 === hash && d.file_available));
+    if (!item?.file_available || hash !== item.sha256 || !Number.isInteger(page) || page < 1 || page > item.page_count || (encoded !== null && !selection)) {
+      throw new Error(selection ? '此批注的 PDF 版本或原文位置已不可用，仍可查看笔记中的摘录。' : '引用的文献、版本或位置已不可用。');
+    }
+    alert();
+    if (active?.id === item.id && active.sha256 === hash && pdf) { pageNumber = page; pane('paper'); await renderPage({ selection }); }
+    else await openDocument(item, { page, selection });
   } catch (error) { alert(error.message); }
 }
 async function syncCurrent() {
@@ -610,6 +728,41 @@ document.querySelectorAll('[data-note-format]').forEach(button => button.addEven
   insertText(({ heading: `\n## ${selected || '标题'}\n`, bold: `**${selected || '重点'}**`, highlight: `==${selected || '重点'}==`, list: `\n- ${selected || '内容'}\n` })[button.dataset.noteFormat]);
 }));
 $('#reader-cite').addEventListener('click', () => { if (active && pdf) insertText(` ${citation()} `); else alert('请先打开 PDF 原文。'); });
+textLayer.addEventListener('pointerdown', event => {
+  if (event.pointerType === 'touch' || event.button !== 0) return;
+  const { clientX: x, clientY: y, pointerId } = event;
+  textDrag = { x, y, pointerId, caret: pdfCaret(x, y) };
+  dismissAnnotationButton();
+});
+for (const type of ['pointerup', 'pointercancel']) window.addEventListener(type, event => {
+  if (!textDrag || textDrag.pointerId !== event.pointerId) return;
+  const drag = textDrag;
+  textDrag = null;
+  const { clientX: x, clientY: y } = event;
+  requestAnimationFrame(() => {
+    const selection = window.getSelection();
+    // Some browsers leave selections across the PDF's positioned text spans collapsed.
+    if (type === 'pointerup' && !textDrag && selection?.isCollapsed && drag.caret &&
+        textLayer.contains(drag.caret.node) && Math.hypot(x - drag.x, y - drag.y) > 4) {
+      const end = pdfCaret(x, y);
+      if (end) selection.setBaseAndExtent(drag.caret.node, drag.caret.offset, end.node, end.offset);
+    }
+    updateAnnotationButton(); scheduleFit();
+  });
+});
+document.addEventListener('selectionchange', () => {
+  const wasSelected = !!selectedPassage;
+  updateAnnotationButton();
+  if (wasSelected && !selectedPassage) scheduleFit();
+});
+pdfScroll.addEventListener('scroll', updateAnnotationButton, { passive: true });
+annotationButton.addEventListener('pointerdown', event => event.preventDefault());
+annotationButton.addEventListener('click', addSelectionAnnotation);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !annotationButton.hidden) {
+    dismissAnnotationButton(); window.getSelection()?.removeAllRanges(); scheduleFit();
+  }
+});
 $('#reader-excerpt').addEventListener('mousedown', event => event.preventDefault());
 $('#reader-excerpt').addEventListener('click', () => {
   const selection = window.getSelection(), layer = $('#reader-text-layer');
@@ -658,7 +811,7 @@ window.addEventListener('beforeunload', event => { if (dirty) { rememberDraft();
 window.addEventListener('pagehide', () => { stopped = true; clearTimeout(reconnect); clearInterval(refreshTimer); socket?.close(); });
 window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; connectEvents(); } });
 window.addEventListener('focus', () => void syncCurrent());
-new ResizeObserver(() => { clearTimeout(resizing); resizing = setTimeout(() => { if (!scale && pdf) void renderPage({ preserveScroll: true }); }, 200); }).observe($('#reader-pdf-scroll'));
+new ResizeObserver(scheduleFit).observe(pdfScroll);
 
 (async () => {
   try {

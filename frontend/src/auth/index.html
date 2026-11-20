@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f5f1e9">
+  <meta name="description" content="LexiVault — 让知识彼此连接，让研究有据可循。你的文献、笔记与研究助手。">
+  <meta name="color-scheme" content="light dark">
+  <title>LexiVault · 登录与注册</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preload" as="image" href="assets/brand-day.png">
+  <link rel="preload" as="image" href="assets/brand-night.png">
+  <link rel="preload" as="font" href="assets/lexi-serif-700.woff" type="font/woff" crossorigin>
+  <link rel="stylesheet" href="fonts.css?v=1dce5ffca964">
+  <link rel="stylesheet" href="styles.css?v=c14b25c0db3a">
+  <link rel="stylesheet" href="auth-motion.css?v=49aaf1aacaac">
+  <script>
+    try {
+      const theme = localStorage.getItem('lexivault.theme');
+      if (theme === 'dark' || theme === 'light') document.documentElement.dataset.theme = theme;
+    } catch (_) {}
+  </script>
+  <script src="validation.js?v=e145a3c9fcec" defer></script>
+  <script src="workspace-client.js?v=e4a4f6dc768e" defer></script><script src="account-client.js?v=52e8610f5a75" defer></script>
+  <script src="app.js?v=81ea3f9400eb" defer></script>
+  <script src="auth-shaders.js?v=d7df33e1b66e" defer></script>
+  <script src="auth-motion.js?v=9237a0aee23d" defer></script>
+</head>
+<body class="auth-page" data-motion-state="running">
+  <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <symbol id="i-logo" viewBox="0 0 44 44"><path fill="currentColor" d="M2 1h9v23.5c0 3.8 1.2 5.8 5.9 8.4l-3.2 6.1-7.4-4C3 33.2 2 30 2 25.2Z"/><path fill="currentColor" d="M25.2 18h11.2L23.3 42H12.1Z"/><path fill="var(--logo-fold, #aaa39f)" d="m31.9 4-5.5 10h11.1L43 4Z"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 1v3m0 16v3M1 12h3m16 0h3M4.22 4.22l2.12 2.12m11.32 11.32 2.12 2.12m0-15.56-2.12 2.12M6.34 17.66l-2.12 2.12"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.8 13.1A8.9 8.9 0 0 1 10.9 3.2a9 9 0 1 0 9.9 9.9Z"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4.5" width="20" height="15" rx="2"/><path d="m3 6 9 6.5L21 6"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="12" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/><circle cx="12" cy="16" r=".7" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+      <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="m3 3 18 18M10.6 5.1A11.8 11.8 0 0 1 12 5c6.5 0 10 7 10 7a17.1 17.1 0 0 1-3 4M6.2 6.2A19.8 19.8 0 0 0 2 12s3.5 7 10 7a12 12 0 0 0 5.1-1.2M10.2 10.2a2.5 2.5 0 0 0 3.6 3.6"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 4.5h6l2.5 3H21a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1Z"/><path d="M2 8h9.5"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="page-shell">
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="LexiVault 首页">
+        <svg class="brand-mark" aria-hidden="true"><use href="#i-logo"/></svg>
+        <span class="wordmark">LexiVault</span>
+      </a>
+      <div class="header-controls">
+        <div class="language-control">
+          <button class="language-button" id="language-button" type="button" aria-expanded="false" aria-controls="language-menu" aria-haspopup="menu">
+            <span id="language-label">简体中文</span><svg class="icon small" aria-hidden="true"><use href="#i-chevron"/></svg>
+          </button>
+          <div class="language-menu" id="language-menu" role="menu" aria-label="语言 / Language" hidden>
+            <button type="button" role="menuitemradio" aria-checked="true" data-language="zh">简体中文<svg class="icon small" aria-hidden="true"><use href="#i-check"/></svg></button>
+            <button type="button" role="menuitemradio" aria-checked="false" data-language="en">English<svg class="icon small" aria-hidden="true"><use href="#i-check"/></svg></button>
+          </div>
+        </div>
+        <span class="header-divider" aria-hidden="true"></span>
+        <div class="theme-switch" role="group" aria-label="外观" data-i18n-aria="appearance">
+          <span class="theme-indicator" aria-hidden="true"></span>
+          <button type="button" class="theme-option" id="theme-light" aria-label="日间模式" data-i18n-aria="lightMode" aria-pressed="true"><svg class="icon sun" aria-hidden="true"><use href="#i-sun"/></svg></button>
+          <button type="button" class="theme-option" id="theme-dark" aria-label="夜间模式" data-i18n-aria="darkMode" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg></button>
+        </div>
+      </div>
+    </header>
+
+    <main class="auth-layout" id="main-content">
+      <section class="brand-panel" aria-labelledby="brand-heading">
+        <div class="auth-environment" aria-hidden="true"><div class="environment-tone environment-tone--day"></div><div class="environment-tone environment-tone--night"></div><div class="auth-window-light"></div><div class="auth-penumbra"></div><div class="auth-warm-bounce"></div></div>
+        <div class="brand-copy">
+          <p class="eyebrow">A QUIET SPACE FOR DEEP RESEARCH</p>
+          <h1 id="brand-heading"><span data-i18n="heroLine1">让知识彼此连接，</span><br><span data-i18n="heroLine2">让研究有据可循。</span></h1>
+          <p class="brand-description" data-i18n="heroDescription">收集文献，记录思考，与自己的知识对话。</p>
+        </div>
+        <div class="brand-art" role="img" aria-label="以折页构成的 LexiVault L 与 V 品牌雕塑" data-i18n-aria="artDescription">
+          <div class="brand-art-motion"><div class="art-crop art-crop--day"><img class="art-image" src="assets/brand-day.png" alt="" width="1585" height="992" fetchpriority="high" draggable="false"></div>
+          <div class="art-crop art-crop--night"><img class="art-image" src="assets/brand-night.png" alt="" width="1585" height="992" draggable="false"></div><div class="material-sheen" aria-hidden="true"></div><canvas class="brand-live-canvas" id="brand-live-canvas" aria-hidden="true"></canvas></div>
+        </div>
+        <div class="auth-optics" aria-hidden="true"><div class="auth-optical-veil"></div><div class="auth-reveal-field"><div class="auth-lens-lines"></div></div></div>
+        <div class="brand-features" aria-label="产品理念" data-i18n-aria="principles"><span data-i18n="localFirst">本地优先</span><i aria-hidden="true">·</i><span data-i18n="sourceGrounded">原文溯源</span><i aria-hidden="true">·</i><span data-i18n="researchAssistant">研究助手</span></div>
+      </section>
+
+      <section class="form-panel" aria-labelledby="auth-heading">
+        <div class="auth-content">
+          <div class="auth-intro">
+            <h2 id="auth-heading" data-i18n="welcome">欢迎回到 LexiVault</h2>
+            <p id="auth-subheading" data-i18n="welcomeDescription">继续你的研究，让思考接着发生。</p>
+          </div>
+          <div class="auth-tabs" role="tablist" aria-label="账号访问" data-i18n-aria="accountAccess">
+            <button class="auth-tab is-active" type="button" role="tab" id="tab-login" aria-selected="true" aria-controls="account-panel" tabindex="0" data-mode="login" data-i18n="login">登录</button>
+            <button class="auth-tab" type="button" role="tab" id="tab-register" aria-selected="false" aria-controls="account-panel" tabindex="-1" data-mode="register" data-i18n="register">注册</button>
+          </div>
+          <div id="account-panel" role="tabpanel" aria-labelledby="tab-login">
+            <form id="auth-form" novalidate>
+              <div class="form-field" id="email-field">
+                <label for="email" data-i18n="email">邮箱</label>
+                <div class="input-wrap"><svg class="icon field-icon" aria-hidden="true"><use href="#i-mail"/></svg><input id="email" name="email" type="email" autocomplete="username" inputmode="email" autocapitalize="none" spellcheck="false" placeholder="you@institute.edu" required maxlength="254" aria-describedby="email-error"></div>
+                <p id="email-error" class="field-error" hidden></p>
+              </div>
+              <div class="form-field" id="password-field">
+                <label for="password" data-i18n="password">密码</label>
+                <div class="input-wrap"><svg class="icon field-icon password-lock" aria-hidden="true"><use href="#i-lock"/></svg><input id="password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" required maxlength="128" aria-describedby="password-error password-hint"><button class="password-visibility" type="button" data-target="password" aria-label="显示密码" data-i18n-aria="showPassword" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg></button></div>
+                <p id="password-hint" class="field-hint" data-i18n="passwordHint" hidden>至少 8 个字符，包含字母与数字。</p>
+                <p id="password-error" class="field-error" hidden></p>
+              </div>
+              <div class="form-field" id="email-code-field" hidden>
+                <div class="form-options"><label for="email-code" data-i18n="verificationCode">邮箱验证码</label><button id="send-email-code" class="text-button" type="button" data-i18n="sendCode">发送验证码</button></div>
+                <div class="input-wrap"><input id="email-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="4" aria-describedby="email-code-error"></div>
+                <p id="email-code-error" class="field-error" hidden></p>
+              </div>
+              <div class="form-field confirm-field" id="confirm-field" hidden>
+                <label for="confirm-password" data-i18n="confirmPassword">确认密码</label>
+                <div class="input-wrap"><svg class="icon field-icon password-lock" aria-hidden="true"><use href="#i-lock"/></svg><input id="confirm-password" name="confirm-password" type="password" autocomplete="new-password" placeholder="••••••••" maxlength="128" aria-describedby="confirm-error"><button class="password-visibility" type="button" data-target="confirm-password" aria-label="显示密码" data-i18n-aria="showPassword" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg></button></div>
+                <p id="confirm-error" class="field-error" hidden></p>
+              </div>
+              <div class="form-options" id="login-options">
+                <label class="checkbox-label"><input id="remember" name="remember" type="checkbox" checked><span class="checkbox-visual" aria-hidden="true"><svg class="icon"><use href="#i-check"/></svg></span><span data-i18n="remember">记住我</span></label>
+                <button class="text-button" id="forgot-password" type="button" data-i18n="forgotPassword">忘记密码？</button>
+              </div>
+              <p class="form-status" id="form-status" role="status" aria-live="polite" hidden></p>
+              <button class="primary-button" type="submit" id="submit-button"><span class="button-spinner" aria-hidden="true" hidden></span><span id="submit-label" data-i18n="login">登录</span></button>
+            </form>
+            <p class="terms-note"><span data-i18n="consent">继续即表示你同意</span> <button type="button" class="inline-link" data-legal="terms" data-i18n="terms">服务条款</button> <span data-i18n="and">与</span> <button type="button" class="inline-link" data-legal="privacy" data-i18n="privacy">隐私政策</button></p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer"><p><span class="footer-brand">LexiVault</span><span class="footer-dash"> — </span>Your research, grounded.</p><p data-i18n="footer">科研，从一份可靠的证据开始。</p></footer>
+  </div>
+
+  <dialog class="modal" id="reset-dialog" aria-labelledby="reset-title">
+    <button class="modal-close" type="button" data-close-dialog aria-label="关闭" data-i18n-aria="close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+    <span class="modal-emblem"><svg class="icon" aria-hidden="true"><use href="#i-mail"/></svg></span>
+    <h2 id="reset-title" data-i18n="resetTitle">找回密码</h2>
+    <p class="modal-description" data-i18n="resetDescription">输入注册邮箱获取验证码，再设置新密码。</p>
+    <form id="reset-form" novalidate>
+      <div class="form-field"><label for="reset-email" data-i18n="email">邮箱</label><div class="input-wrap"><svg class="icon field-icon" aria-hidden="true"><use href="#i-mail"/></svg><input id="reset-email" type="email" autocomplete="email" placeholder="you@institute.edu" required maxlength="254" aria-describedby="reset-error"></div><p class="field-error" id="reset-error" hidden></p></div>
+      <div class="form-field">
+        <div class="form-options"><label for="reset-code" data-i18n="verificationCode">邮箱验证码</label><button class="text-button" id="reset-send-code" type="button" data-i18n="sendCode">发送验证码</button></div>
+        <div class="input-wrap"><input id="reset-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="4" required></div>
+      </div>
+      <div class="form-field"><label for="reset-password" data-i18n="newPassword">新密码</label><div class="input-wrap"><input id="reset-password" type="password" autocomplete="new-password" maxlength="128" required></div></div>
+      <div class="form-field"><label for="reset-confirm-password" data-i18n="confirmPassword">确认密码</label><div class="input-wrap"><input id="reset-confirm-password" type="password" autocomplete="new-password" maxlength="128" required></div></div>
+      <p class="form-status" id="reset-status" role="status" aria-live="polite" hidden></p>
+      <button class="primary-button" id="reset-submit" type="submit" data-i18n="resetPassword">重置密码</button>
+    </form>
+  </dialog>
+  <dialog class="modal legal-modal" id="legal-dialog" aria-labelledby="legal-title"><button class="modal-close" type="button" data-close-dialog aria-label="关闭" data-i18n-aria="close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button><h2 id="legal-title"></h2><div class="legal-content" id="legal-content"></div><button class="primary-button" type="button" data-close-dialog data-i18n="understood">我知道了</button></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

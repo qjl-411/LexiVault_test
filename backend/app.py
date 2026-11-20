@@ -7,6 +7,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -20,6 +21,8 @@ from .storage import MAX_PDF, NOTE_HEADER, Registry, StoreError, atomic_write, d
 from .accounts import AccountStore
 from .auth_api import COOKIE, account_router
 from .catalog_api import catalog_router
+from .discovery_api import discovery_router
+from .inspect_pdf import validate_pdf
 from .workspace_api import workspace_router
 from .plans_api import plan_router
 
@@ -36,6 +39,19 @@ class WorkspaceInput(BaseModel):
 
 class PositionInput(BaseModel):
     page: int = Field(ge=1)
+
+
+def select_workspace_directory(title: str) -> Path | None:
+    try:
+        result = subprocess.run([sys.executable, '-m', 'backend.pick_folder', title],
+                                capture_output=True, text=True, encoding='utf-8', timeout=180,
+                                cwd=str(Path(__file__).resolve().parents[1]))
+    except subprocess.TimeoutExpired:
+        raise StoreError('目录选择已超时，请重试。', 408)
+    if result.returncode:
+        raise StoreError('无法打开目录选择窗口，请检查本地服务是否可使用桌面。', 503)
+    selected = json.loads(result.stdout)
+    return Path(selected) if selected else None
 
 
 def create_app(data_dir: Path, frontend: Path | None = None):
@@ -124,6 +140,34 @@ def create_app(data_dir: Path, frontend: Path | None = None):
                     return JSONResponse({"message": "本地会话已失效，请刷新页面。"}, status_code=401)
                 if request.method not in {"GET", "HEAD"} and request.headers.get("x-lexivault-token") != token:
                     return JSONResponse({"message": "请求缺少本地会话校验。"}, status_code=403)
+        identity = None
+        page = request.url.path == '/' or request.url.path.endswith('.html') or request.url.path in {'/docs','/redoc','/openapi.json'}
+        api = request.url.path.startswith('/api/')
+        if page or api:
+            identity = await asyncio.to_thread(accounts.current, request.cookies.get(COOKIE))
+            request.state.user = identity
+        public_api = request.url.path in {
+            '/api/session','/api/auth/register','/api/auth/login','/api/auth/me','/api/auth/logout',
+            '/api/auth/email-code','/api/auth/password-reset','/api/auth/password-reset/confirm',
+        }
+        if (api and not public_api) or (page and request.url.path != '/index.html'):
+            if not identity:
+                if page:
+                    response = RedirectResponse('/index.html', status_code=303)
+                else:
+                    response = JSONResponse({'message':'请先登录账号。','code':'loginRequired'}, status_code=401)
+                response.headers['Cache-Control'] = 'no-store'
+                return response
+        if api and identity and not public_api:
+            expected_user = request.headers.get('x-lexivault-user')
+            if expected_user and expected_user != identity['id']:
+                return JSONResponse({'message':'账号已切换，请重新打开页面。','code':'accountChanged'}, status_code=401, headers={'Cache-Control':'no-store'})
+            parts = request.url.path.strip('/').split('/')
+            if len(parts) >= 3 and parts[:2] == ['api','workspaces'] and parts[2] != 'choose':
+                try:
+                    await asyncio.to_thread(registry.authorized, parts[2], identity['id'])
+                except StoreError as error:
+                    return JSONResponse({'message':error.message, **error.details}, status_code=error.status, headers={'Cache-Control':'no-store'})
         try:
             response = await call_next(request)
         except Exception:
@@ -134,13 +178,17 @@ def create_app(data_dir: Path, frontend: Path | None = None):
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
-        elif request.url.path.endswith(('.html','.js','.mjs')):
+        elif page:
+            response.headers['Cache-Control'] = 'no-store'
+        elif request.url.path.endswith(('.js','.mjs')):
             response.headers['Cache-Control'] = 'no-cache'
         return response
 
     @app.get("/api/session")
-    def session():
-        response = JSONResponse({"token": token, "data_dir": str(registry.root)})
+    def session(request: Request):
+        identity = request.state.user
+        response = JSONResponse({"token": token, "user_id": identity['id'] if identity else None,
+                                 "data_dir": str(registry.root) if identity else ''})
         response.set_cookie("lv_session", token, httponly=True, samesite="strict")
         return response
 
@@ -150,41 +198,35 @@ def create_app(data_dir: Path, frontend: Path | None = None):
 
     app.include_router(account_router(accounts))
     app.include_router(catalog_router(registry))
+    app.include_router(discovery_router(registry, notify, accounts))
     app.include_router(workspace_router(registry))
     app.include_router(plan_router(registry))
     from .files_api import files_router
     app.include_router(files_router(registry))
 
     @app.get("/api/workspaces")
-    def workspaces():
-        return [workspace.info() for workspace in registry.items.values()]
+    def workspaces(request: Request):
+        return registry.opened(request.state.user['id'])
 
     @app.post('/api/workspaces/{workspace_id}/open')
     def mark_open(workspace_id: str, request: Request):
-        identity = accounts.current(request.cookies.get(COOKIE))
-        return registry.mark_open(workspace_id,identity['id'] if identity else None)
+        return registry.mark_open(workspace_id,request.state.user['id'])
 
     @app.post("/api/workspaces", status_code=201)
-    async def new_workspace(body: WorkspaceInput):
-        workspace = await asyncio.to_thread(registry.create, body.name)
+    async def new_workspace(body: WorkspaceInput, request: Request):
+        parent = await asyncio.to_thread(select_workspace_directory, '选择新工作空间的保存位置')
+        if parent is None:
+            return JSONResponse({'cancelled': True})
+        workspace = await asyncio.to_thread(registry.create, parent, body.name, request.state.user['id'])
         start_watcher(workspace)
         return workspace.info()
 
     @app.post("/api/workspaces/choose")
-    async def choose_workspace():
-        def select():
-            result = subprocess.run([sys.executable, "-m", "backend.pick_folder"], capture_output=True, text=True,
-                                    encoding="utf-8", timeout=180, cwd=str(Path(__file__).resolve().parents[1]))
-            if result.returncode:
-                raise StoreError("无法打开目录选择窗口。可通过启动参数 --workspace 指定工作空间。", 503)
-            return json.loads(result.stdout)
-        try:
-            path = await asyncio.to_thread(select)
-        except subprocess.TimeoutExpired:
-            raise StoreError("目录选择已超时，请重试。", 408)
-        if not path:
+    async def choose_workspace(request: Request):
+        path = await asyncio.to_thread(select_workspace_directory, '选择已有工作空间目录')
+        if path is None:
             return {"cancelled": True}
-        workspace = await asyncio.to_thread(registry.add, Path(path))
+        workspace = await asyncio.to_thread(registry.add, path, user_id=request.state.user['id'])
         start_watcher(workspace)
         return workspace.info()
 
@@ -205,19 +247,7 @@ def create_app(data_dir: Path, frontend: Path | None = None):
             with tempfile.TemporaryDirectory(prefix="import-", dir=registry.root) as temp:
                 path = Path(temp) / "input.pdf"
                 path.write_bytes(data)
-                try:
-                    result = subprocess.run([sys.executable, "-m", "backend.inspect_pdf", str(path)],
-                                            capture_output=True, encoding="utf-8", timeout=30,
-                                            cwd=str(Path(__file__).resolve().parents[1]))
-                except subprocess.TimeoutExpired:
-                    raise StoreError("PDF 校验超过 30 秒，已停止处理；请检查文件或拆分后重试。", 408)
-                try:
-                    report = json.loads(result.stdout)
-                except ValueError:
-                    raise StoreError("PDF 校验进程未完成，文件未入库。")
-                if report.get("error"):
-                    raise StoreError(report["error"])
-                count = report["pages"]
+                count = validate_pdf(path)
             return workspace.ingest(data, file.filename or "paper.pdf", count,document_id=document_id,directory=directory)
         result = await asyncio.to_thread(validate_and_ingest)
         await notify(workspace_id)
@@ -258,33 +288,46 @@ def create_app(data_dir: Path, frontend: Path | None = None):
     @app.websocket("/api/workspaces/{workspace_id}/events")
     async def events(websocket: WebSocket, workspace_id: str):
         origin = websocket.headers.get("origin")
-        expected = f"http://{websocket.headers.get('host')}"
+        expected = f"{'https' if websocket.url.scheme == 'wss' else 'http'}://{websocket.headers.get('host')}"
         if websocket.cookies.get("lv_session") != token or (origin and origin != expected):
             await websocket.close(code=1008)
             return
         try:
-            registry.get(workspace_id)
+            identity = await asyncio.to_thread(accounts.current, websocket.cookies.get(COOKIE))
+            await asyncio.to_thread(registry.authorized, workspace_id, identity['id'] if identity else None)
         except StoreError:
             await websocket.close(code=1008)
             return
         await websocket.accept()
         queue = asyncio.Queue(maxsize=1)
         listeners.setdefault(workspace_id, set()).add(queue)
+        last_sent = time.monotonic()
         try:
             while True:
+                identity = await asyncio.to_thread(accounts.current, websocket.cookies.get(COOKIE))
+                if not identity:
+                    await websocket.close(code=1008)
+                    break
+                await asyncio.to_thread(registry.authorized, workspace_id, identity['id'])
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                    event = await asyncio.wait_for(queue.get(), timeout=1)
                 except asyncio.TimeoutError:
+                    if time.monotonic() - last_sent < 15:
+                        continue
                     event = {"type": "heartbeat"}
+                if not await asyncio.to_thread(accounts.current, websocket.cookies.get(COOKIE)):
+                    await websocket.close(code=1008)
+                    break
                 await websocket.send_json(event)
-        except (WebSocketDisconnect, RuntimeError):
+                last_sent = time.monotonic()
+        except (WebSocketDisconnect, RuntimeError, StoreError):
             pass
         finally:
             listeners[workspace_id].discard(queue)
 
     @app.get("/")
     def index():
-        return RedirectResponse("/reader.html")
+        return RedirectResponse("/home.html")
 
     if frontend:
         app.mount("/", FrontendStaticFiles(directory=str(frontend), html=True), name="frontend")

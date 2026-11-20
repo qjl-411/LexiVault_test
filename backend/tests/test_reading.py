@@ -9,6 +9,7 @@ from pypdf import PdfWriter
 
 from backend.app import create_app
 from backend.storage import NOTE_HEADER, Registry, StoreError, Workspace, within
+from backend.tests.auth_helpers import sign_in
 
 
 def pdf_bytes(pages=2):
@@ -26,6 +27,7 @@ def session(tmp_path):
     with TestClient(app) as client:
         token = client.get("/api/session").json()["token"]
         client.headers["x-lexivault-token"] = token
+        sign_in(client)
         workspace = client.post("/api/workspaces", json={"name": "中文课题"}).json()
         base = f"/api/workspaces/{workspace['id']}"
         yield client, base, app, workspace
